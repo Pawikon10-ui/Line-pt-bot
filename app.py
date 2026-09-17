@@ -46,16 +46,6 @@ SYSTEM_INSTRUCTION = """
 6. ในตอนท้ายของคำตอบ ให้เชิญชวนอย่างนุ่มนวลว่า "หากต้องการตรวจประเมินร่างกายอย่างละเอียดกับนักกายภาพบำบัด สามารถพิมพ์ 'จองคิว' ได้เลยนะคะ"
 """
 
-# --- 2. ข้อมูลการเชื่อมต่อ Google Sheets ---
-# SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-# creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
-# client = gspread.authorize(creds)
-# SPREADSHEET_ID = "1NuGHeurpnpXnEefOV1iA8K627biu8itiupyLl2I7cpE"
-# sheet = client.open_by_key(SPREADSHEET_ID).sheet1
-
 user_sessions = {}
 
 
