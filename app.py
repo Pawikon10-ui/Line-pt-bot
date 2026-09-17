@@ -26,7 +26,7 @@ CHANNEL_SECRET = "2636c41903dc0f636d6ebcf87f6a4dba"
 CHANNEL_ACCESS_TOKEN = "iVq/zXeOkyImYHGBHyw0cUv+3RgZ+Xl2BCLzI64N6QER8VrDUsAR79yTubyn3MYNm1jml2Zd4h8HYJZEiU+tpw/PJUgJLeyR0B/OdKb3aQe/oSdbpzDQjiTfm8iCLjGstlNiAEtXbl3ccYbWxjgbIAdB04t89/1O/w1cDnyilFU="
 
 # 👉 นำ Gemini API Key ที่ได้จาก Google AI Studio มาวางตรงนี้ครับ:
-GEMINI_API_KEY = "193ac59ecb0f61195778652b5211ea0eb1fae5f5"
+GEMINI_API_KEY = "286ac0d74b665ca9899fedc372e59aad23df5206"
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
