@@ -29,8 +29,8 @@ CHANNEL_ACCESS_TOKEN = "iVq/zXeOkyImYHGBHyw0cUv+3RgZ+Xl2BCLzI64N6QER8VrDUsAR79yT
 import os
 from google import genai
 
-api_key = os.getenv("GEMINI_API_KEY")
-ai_client = genai.Client(api_key=api_key)
+GEMINI_API_KEY = "286ac0d74b665ca9899fedc372e59aad23df5206"
+ai_client = genai.Client(api_key=GEMNI_API_KEY)
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
