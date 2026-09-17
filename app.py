@@ -1,10 +1,11 @@
 from datetime import datetime
+import json
 import os
 import re
 from fastapi import FastAPI, Header, HTTPException, Request
 from google import genai
-# import gspread
 from google.oauth2.service_account import Credentials
+import gspread
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -21,20 +22,22 @@ from linebot.v3.webhooks import FollowEvent, MessageEvent, TextMessageContent
 import uvicorn
 
 # --- 1. ข้อมูลการเชื่อมต่อ LINE & Gemini ---
-	
-CHANNEL_SECRET = "2636c41903dc0f636d6ebcf87f6a4dba"
-CHANNEL_ACCESS_TOKEN = "iVq/zXeOkyImYHGBHyw0cUv+3RgZ+Xl2BCLzI64N6QER8VrDUsAR79yTubyn3MYNm1jml2Zd4h8HYJZEiU+tpw/PJUgJLeyR0B/OdKb3aQe/oSdbpzDQjiTfm8iCLjGstlNiAEtXbl3ccYbWxjgbIAdB04t89/1O/w1cDnyilFU="
-
-# 👉 นำ Gemini API Key ที่ได้จาก Google AI Studio มาวางตรงนี้ครับ:
-import os
-from google import genai
-
+CHANNEL_SECRET = os.getenv(
+    "LINE_CHANNEL_SECRET", "2636c41903dc0f636d6ebcf87f6a4dba"
+)
+CHANNEL_ACCESS_TOKEN = os.getenv(
+    "LINE_CHANNEL_ACCESS_TOKEN",
+    "iVq/zXeOkyImYHGBHyw0cUv+3RgZ+Xl2BCLzI64N6QER8VrDUsAR79yTubyn3MYNm1jml2Zd4h8HYJZEiU+tpw/PJUgJLeyR0B/OdKb3aQe/oSdbpzDQjiTfm8iCLjGstlNiAEtXbl3ccYbWxjgbIAdB04t89/1O/w1cDnyilFU=",
+)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
+if GEMINI_API_KEY:
+  ai_client = genai.Client(api_key=GEMINI_API_KEY)
+else:
+  ai_client = None
 
 # กำหนดบทบาทของ AI สำหรับคลินิกกายภาพบำบัด
 SYSTEM_INSTRUCTION = """
@@ -50,6 +53,26 @@ SYSTEM_INSTRUCTION = """
 6. ในตอนท้ายของคำตอบ ให้เชิญชวนอย่างนุ่มนวลว่า "หากต้องการตรวจประเมินร่างกายอย่างละเอียดกับนักกายภาพบำบัด สามารถพิมพ์ 'จองคิว' ได้เลยนะคะ"
 """
 
+# --- 2. ข้อมูลการเชื่อมต่อ Google Sheets ---
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+SPREADSHEET_ID = "1NuGHeurpnpXnEefOV1iA8K627biu8itiupyLl2I7cpE"
+sheet = None
+
+# ตรวจสอบว่ามี credentials.json (ทั้งบนเครื่อง Mac และ Secret File บน Render)
+if os.path.exists("credentials.json"):
+  try:
+    creds = Credentials.from_service_account_file(
+        "credentials.json", scopes=SCOPES
+    )
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key(SPREADSHEET_ID).sheet1
+    print("Google Sheets connected successfully!")
+  except Exception as e:
+    print(f"Google Sheets connection error: {e}")
+
 user_sessions = {}
 
 
@@ -62,26 +85,28 @@ def clean_text(text: str) -> str:
 
 
 def get_patient_profile(user_id: str):
-#  """ค้นหาประวัติคนไข้เดิมจาก Google Sheet ด้วย LINE User ID"""
-#  try:
-#    records = sheet.get_all_values()
-#    for row in reversed(records[1:]):
-#      if len(row) >= 5:
-#        r_time, r_uid, r_name, r_phone, r_symptom = row[:5]
-#        if r_uid == user_id:
-#          if (
-#              r_name
-#              and r_name != "คนไข้ผ่าน LINE"
-#              and r_phone
-#              and r_phone != "-"
-#          ):
-#            return {
-#               "name": r_name,
-#                "phone": r_phone,
-#                "last_symptom": r_symptom or "อาการเดิม",
-#            }
-#  except Exception as e:
-#    print(f"Error fetching profile: {e}")
+  """ค้นหาประวัติคนไข้เดิมจาก Google Sheet ด้วย LINE User ID"""
+  if not sheet:
+    return None
+  try:
+    records = sheet.get_all_values()
+    for row in reversed(records[1:]):
+      if len(row) >= 5:
+        r_time, r_uid, r_name, r_phone, r_symptom = row[:5]
+        if r_uid == user_id:
+          if (
+              r_name
+              and r_name != "คนไข้ผ่าน LINE"
+              and r_phone
+              and r_phone != "-"
+          ):
+            return {
+                "name": r_name,
+                "phone": r_phone,
+                "last_symptom": r_symptom or "อาการเดิม",
+            }
+  except Exception as e:
+    print(f"Error fetching profile: {e}")
   return None
 
 
@@ -220,7 +245,7 @@ def handle_message(event):
         text=(
             f"รับทราบอาการ:\n'{clean_symptom}'\n\n"
             "2/3 กรุณาพิมพ์ 'ชื่อ-นามสกุล และเบอร์โทรศัพท์' สำหรับติดต่อค่ะ\n"
-            "(ตัวอย่าง: ทรัสมี คลินิก 082xxxxxxx)"
+            "(ตัวอย่าง: ปวีณ์กร การเร็ว 0826569179)"
         )
     )
 
@@ -231,7 +256,7 @@ def handle_message(event):
       raw_phone = phone_match.group()
       phone = raw_phone.replace("-", "").replace(" ", "")
       raw_name = user_text.replace(raw_phone, "").strip()
-      name = re.sub(r"^(ชื่อ|คุณ|ติดต่อ)\s*[:\s]*", "", raw_name).strip()
+      name = re.sub(r"^(ชื่อ|คุณ|ติดต่อ)\s*[:\\s]*", "", raw_name).strip()
       name = clean_text(name)
       if not name:
         name = "คนไข้ผ่าน LINE"
@@ -274,7 +299,14 @@ def handle_message(event):
         "รอยืนยัน",
         "นัดหมายผ่าน LINE",
     ]
-    sheet.append_row(row)
+    if sheet:
+      try:
+        sheet.append_row(row)
+      except Exception as e:
+        print(f"Error appending row to Google Sheets: {e}")
+    else:
+      print("Warning: Google Sheet is not connected. Skipping append_row.")
+
     user_sessions.pop(user_id, None)
 
     reply_msg = TextMessage(
@@ -288,23 +320,28 @@ def handle_message(event):
         )
     )
 
-  # --- กรณีถามคำถามอื่นๆ (ส่งให้ Gemini AI ตอบคำถามกายภาพบำบัด พร้อม Fallback ป้องกัน 503) ---
+  # --- กรณีถามคำถามอื่นๆ (ส่งให้ Gemini AI ตอบคำถามกายภาพบำบัด) ---
   else:
     reply_text = None
-    candidate_models = ["gemini-flash-latest", "gemini-3.5-flash", "gemini-3.6-flash"]
-    for model_name in candidate_models:
-      try:
-        ai_response = ai_client.models.generate_content(
-            model=model_name,
-            contents=user_text,
-            config={"system_instruction": SYSTEM_INSTRUCTION},
-        )
-        if ai_response and ai_response.text:
-          reply_text = ai_response.text
-          break
-      except Exception as err:
-        print(f"Model {model_name} error: {err}")
-        continue
+    if ai_client:
+      candidate_models = [
+          "gemini-flash-latest",
+          "gemini-3.5-flash",
+          "gemini-3.6-flash",
+      ]
+      for model_name in candidate_models:
+        try:
+          ai_response = ai_client.models.generate_content(
+              model=model_name,
+              contents=user_text,
+              config={"system_instruction": SYSTEM_INSTRUCTION},
+          )
+          if ai_response and ai_response.text:
+            reply_text = ai_response.text
+            break
+        except Exception as err:
+          print(f"Model {model_name} error: {err}")
+          continue
 
     if not reply_text:
       reply_text = (
