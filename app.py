@@ -307,9 +307,19 @@ def handle_message(event):
     ]
     if sheet:
       try:
-        sheet.append_row(row)
+        all_vals = sheet.get_all_values()
+        next_r = len(all_vals) + 1
+        for i, r_val in enumerate(all_vals, start=1):
+          if i > 1 and not any(r_val):
+            next_r = i
+            break
+        sheet.update(range_name=f"A{next_r}:H{next_r}", values=[row])
       except Exception as e:
-        print(f"Error appending row to Google Sheets: {e}")
+        print(f"Error updating row to Google Sheets: {e}")
+        try:
+          sheet.append_row(row)
+        except Exception:
+          pass
     else:
       print("Warning: Google Sheet is not connected. Skipping append_row.")
 
