@@ -61,17 +61,23 @@ SCOPES = [
 SPREADSHEET_ID = "1NuGHeurpnpXnEefOV1iA8K627biu8itiupyLl2I7cpE"
 sheet = None
 
-# ตรวจสอบว่ามี credentials.json (ทั้งบนเครื่อง Mac และ Secret File บน Render)
-if os.path.exists("credentials.json"):
+# ตรวจสอบหาไฟล์ credentials.json ทั้งในเครื่อง Mac และบน Render (/etc/secrets/credentials.json)
+creds_path = None
+for path in ["credentials.json", "/etc/secrets/credentials.json", "/opt/render/project/src/credentials.json"]:
+  if os.path.exists(path):
+    creds_path = path
+    break
+
+if creds_path:
   try:
-    creds = Credentials.from_service_account_file(
-        "credentials.json", scopes=SCOPES
-    )
+    creds = Credentials.from_service_account_file(creds_path, scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).sheet1
-    print("Google Sheets connected successfully!")
+    print(f"Google Sheets connected successfully from {creds_path}!")
   except Exception as e:
     print(f"Google Sheets connection error: {e}")
+else:
+  print("Warning: credentials.json not found in any expected paths!")
 
 user_sessions = {}
 
