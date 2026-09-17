@@ -4,7 +4,7 @@ import re
 from fastapi import FastAPI, Header, HTTPException, Request
 from google import genai
 # import gspread
-# from google.oauth2.service_account import Credentials
+from google.oauth2.service_account import Credentials
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
