@@ -29,9 +29,8 @@ CHANNEL_ACCESS_TOKEN = "iVq/zXeOkyImYHGBHyw0cUv+3RgZ+Xl2BCLzI64N6QER8VrDUsAR79yT
 import os
 from google import genai
 
-# ดึงค่า API Key จาก Environment Variable บน Render
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
+api_key = os.getenv("GEMINI_API_KEY")
+ai_client = genai.Client(api_key=api_key)
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
