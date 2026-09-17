@@ -22,11 +22,11 @@ import uvicorn
 
 # --- 1. ข้อมูลการเชื่อมต่อ LINE & Gemini ---
 import os 	
-CHANNEL_SECRET = os.environ.get("2636c41903dc0f636d6ebcf87f6a4dba")
-CHANNEL_ACCESS_TOKEN = os.environ.get("iVq/zXeOkyImYHGBHyw0cUv+3RgZ+Xl2BCLzI64N6QER8VrDUsAR79yTubyn3MYNm1jml2Zd4h8HYJZEiU+tpw/PJUgJLeyR0B/OdKb3aQe/oSdbpzDQjiTfm8iCLjGstlNiAEtXbl3ccYbWxjgbIAdB04t89/1O/w1cDnyilFU=")
+CHANNEL_SECRET = "2636c41903dc0f636d6ebcf87f6a4dba"
+CHANNEL_ACCESS_TOKEN = "iVq/zXeOkyImYHGBHyw0cUv+3RgZ+Xl2BCLzI64N6QER8VrDUsAR79yTubyn3MYNm1jml2Zd4h8HYJZEiU+tpw/PJUgJLeyR0B/OdKb3aQe/oSdbpzDQjiTfm8iCLjGstlNiAEtXbl3ccYbWxjgbIAdB04t89/1O/w1cDnyilFU="
 
 # 👉 นำ Gemini API Key ที่ได้จาก Google AI Studio มาวางตรงนี้ครับ:
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_API_KEY = "35045450a81181e8ee1dfb75acd59f3348284908"
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
