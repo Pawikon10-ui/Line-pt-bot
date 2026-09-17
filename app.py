@@ -58,26 +58,26 @@ def clean_text(text: str) -> str:
 
 
 def get_patient_profile(user_id: str):
-  """ค้นหาประวัติคนไข้เดิมจาก Google Sheet ด้วย LINE User ID"""
-  try:
-    records = sheet.get_all_values()
-    for row in reversed(records[1:]):
-      if len(row) >= 5:
-        r_time, r_uid, r_name, r_phone, r_symptom = row[:5]
-        if r_uid == user_id:
-          if (
-              r_name
-              and r_name != "คนไข้ผ่าน LINE"
-              and r_phone
-              and r_phone != "-"
-          ):
-            return {
-                "name": r_name,
-                "phone": r_phone,
-                "last_symptom": r_symptom or "อาการเดิม",
-            }
-  except Exception as e:
-    print(f"Error fetching profile: {e}")
+#  """ค้นหาประวัติคนไข้เดิมจาก Google Sheet ด้วย LINE User ID"""
+#  try:
+#    records = sheet.get_all_values()
+#    for row in reversed(records[1:]):
+#      if len(row) >= 5:
+#        r_time, r_uid, r_name, r_phone, r_symptom = row[:5]
+#        if r_uid == user_id:
+#          if (
+#              r_name
+#              and r_name != "คนไข้ผ่าน LINE"
+#              and r_phone
+#              and r_phone != "-"
+#          ):
+#            return {
+#               "name": r_name,
+#                "phone": r_phone,
+#                "last_symptom": r_symptom or "อาการเดิม",
+#            }
+#  except Exception as e:
+#    print(f"Error fetching profile: {e}")
   return None
 
 
