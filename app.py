@@ -4,6 +4,7 @@ import os
 import re
 import threading
 import time
+from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from google import genai
 from google.oauth2.service_account import Credentials
@@ -24,18 +25,16 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import FollowEvent, MessageEvent, TextMessageContent
 import uvicorn
 
-# --- 1. ข้อมูลการเชื่อมต่อ LINE & Gemini ---
-CHANNEL_SECRET = os.getenv(
-    "LINE_CHANNEL_SECRET", "2636c41903dc0f636d6ebcf87f6a4dba"
-)
-CHANNEL_ACCESS_TOKEN = os.getenv(
-    "LINE_CHANNEL_ACCESS_TOKEN",
-    "iVq/zXeOkyImYHGBHyw0cUv+3RgZ+Xl2BCLzI64N6QER8VrDUsAR79yTubyn3MYNm1jml2Zd4h8HYJZEiU+tpw/PJUgJLeyR0B/OdKb3aQe/oSdbpzDQjiTfm8iCLjGstlNiAEtXbl3ccYbWxjgbIAdB04t89/1O/w1cDnyilFU=",
-)
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+load_dotenv()
 
-configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(CHANNEL_SECRET)
+# --- 1. ข้อมูลการเชื่อมต่อ LINE & Gemini ---
+CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+LINE_CONFIGURED = bool(CHANNEL_SECRET and CHANNEL_ACCESS_TOKEN)
+
+configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN or "")
+handler = WebhookHandler(CHANNEL_SECRET or "")
 
 if GEMINI_API_KEY:
   ai_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -64,21 +63,35 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
-SPREADSHEET_ID = "1NuGHeurpnpXnEefOV1iA8K627biu8itiupyLl2I7cpE"
+SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID")
 sheet = None
+sheet_lock = threading.Lock()
 
 # ตรวจสอบหาไฟล์ credentials.json ทั้งในเครื่อง Mac และบน Render (/etc/secrets/credentials.json)
 creds_path = None
-for path in [
+for path in filter(None, [
+    os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
     "credentials.json",
     "/etc/secrets/credentials.json",
     "/opt/render/project/src/credentials.json",
-]:
+]):
   if os.path.exists(path):
     creds_path = path
     break
 
-if creds_path:
+if not SPREADSHEET_ID:
+  print("Warning: GOOGLE_SPREADSHEET_ID is not configured!")
+elif os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"):
+  try:
+    creds = Credentials.from_service_account_info(
+        json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]), scopes=SCOPES
+    )
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key(SPREADSHEET_ID).sheet1
+    print("Google Sheets connected successfully from GOOGLE_SERVICE_ACCOUNT_JSON!")
+  except Exception as e:
+    print(f"Google Sheets connection error: {e}")
+elif creds_path:
   try:
     creds = Credentials.from_service_account_file(creds_path, scopes=SCOPES)
     client = gspread.authorize(creds)
@@ -91,6 +104,7 @@ else:
 
 user_sessions = {}
 patient_profile_cache = {}  # {user_id: {"data": profile_dict, "time": float}}
+SESSION_TTL_SECONDS = 60 * 60
 
 CANCEL_KEYWORDS = [
     "ยกเลิก",
@@ -239,7 +253,8 @@ def get_patient_profile(user_id: str):
   if not sheet:
     return None
   try:
-    records = sheet.get_all_values()
+    with sheet_lock:
+      records = sheet.get_all_values()
     # หาแถวล่าสุดที่มีอาการจริง (ไม่ใช่อาการขยะ เช่น ยกเลิก หรือ สวัสดี)
     for row in reversed(records[1:]):
       if len(row) >= 5:
@@ -280,47 +295,41 @@ def get_patient_profile(user_id: str):
   return None
 
 
-def _sync_profile_to_sheets(user_id: str, new_name: str, new_phone: str):
-  """ซิงค์ข้อมูลคนไข้ลง Google Sheets ในเบื้องหลัง (Background Thread)"""
+def _sync_profile_to_sheets(user_id: str, new_name: str, new_phone: str) -> bool:
+  """บันทึกข้อมูลคนไข้ลง Google Sheets และรายงานผลลัพธ์ให้ผู้เรียกใช้"""
   if not sheet:
-    return
+    return False
   try:
-    records = sheet.get_all_values()
-    target_row_idx = None
-    for idx, row in enumerate(records, start=1):
-      if idx > 1 and len(row) >= 2 and row[1] == user_id:
-        target_row_idx = idx
+    # การอ่านและเขียนต้องอยู่ใน lock เดียวกัน เพื่อไม่ให้การจองพร้อมกันเขียนทับแถว
+    with sheet_lock:
+      records = sheet.get_all_values()
+      target_row_idx = None
+      for idx, row in enumerate(records, start=1):
+        if idx > 1 and len(row) >= 2 and row[1] == user_id:
+          target_row_idx = idx
 
-    if target_row_idx:
-      sheet.update(
-          range_name=f"C{target_row_idx}:D{target_row_idx}",
-          values=[[new_name, new_phone]],
-      )
-    else:
-      timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-      row = [
-          timestamp,
-          user_id,
-          new_name,
-          new_phone,
-          "-",
-          "-",
-          "บันทึกประวัติ",
-          "อัปเดตข้อมูลผ่าน LINE",
-      ]
-      all_vals = sheet.get_all_values()
-      next_r = len(all_vals) + 1
-      for i, r_val in enumerate(all_vals, start=1):
-        if i > 1 and not any(r_val):
-          next_r = i
-          break
-      sheet.update(range_name=f"A{next_r}:H{next_r}", values=[row])
+      if target_row_idx:
+        sheet.update(
+            range_name=f"C{target_row_idx}:D{target_row_idx}",
+            values=[[new_name, new_phone]],
+        )
+      else:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        row = [
+            timestamp, user_id, new_name, new_phone, "-", "-", "บันทึกประวัติ",
+            "อัปเดตข้อมูลผ่าน LINE",
+        ]
+        sheet.append_row(row)
+    return True
   except Exception as e:
     print(f"Error updating patient profile in Google Sheets: {e}")
+    return False
 
 
 def update_patient_profile(user_id: str, new_name: str, new_phone: str) -> bool:
-  """อัปเดต Cache ทันทีเพื่อให้บอทตอบได้แบบ Real-time และบันทึกลง Sheet ในเบื้องหลัง"""
+  """บันทึกข้อมูลก่อน แล้วค่อยอัปเดต cache เพื่อไม่รายงานความสำเร็จเกินจริง"""
+  if not _sync_profile_to_sheets(user_id, new_name, new_phone):
+    return False
   now = time.time()
   old_prof = patient_profile_cache.get(user_id, {}).get("data", {})
   last_symptom = old_prof.get("last_symptom", "ตรวจประเมินร่างกาย")
@@ -332,32 +341,20 @@ def update_patient_profile(user_id: str, new_name: str, new_phone: str) -> bool:
       },
       "time": now,
   }
-  threading.Thread(
-      target=_sync_profile_to_sheets,
-      args=(user_id, new_name, new_phone),
-      daemon=True,
-  ).start()
   return True
 
 
-def _sync_booking_to_sheets(row: list):
-  """ซิงค์ข้อมูลการจองลง Google Sheets ในเบื้องหลัง (Background Thread)"""
+def _sync_booking_to_sheets(row: list) -> bool:
+  """บันทึกคำขอนัดหมายลง Google Sheets แบบตรวจสอบผลลัพธ์"""
   if not sheet:
-    return
+    return False
   try:
-    all_vals = sheet.get_all_values()
-    next_r = len(all_vals) + 1
-    for i, r_val in enumerate(all_vals, start=1):
-      if i > 1 and not any(r_val):
-        next_r = i
-        break
-    sheet.update(range_name=f"A{next_r}:H{next_r}", values=[row])
+    with sheet_lock:
+      sheet.append_row(row)
+    return True
   except Exception as e:
     print(f"Error updating row to Google Sheets: {e}")
-    try:
-      sheet.append_row(row)
-    except Exception:
-      pass
+    return False
 
 
 app = FastAPI()
@@ -374,6 +371,8 @@ async def ping():
 async def callback(
     request: Request, x_line_signature: str = Header(None, alias="x-line-signature")
 ):
+  if not LINE_CONFIGURED:
+    raise HTTPException(status_code=503, detail="LINE credentials are not configured")
   body = (await request.body()).decode("utf-8")
   if not x_line_signature:
     raise HTTPException(status_code=400, detail="Missing signature")
@@ -425,6 +424,11 @@ def handle_message(event):
       pass
 
     session = user_sessions.get(user_id, {})
+    now = time.time()
+    if session and now - session.get("_updated_at", now) > SESSION_TTL_SECONDS:
+      user_sessions.pop(user_id, None)
+      session = {}
+    session["_updated_at"] = now
     current_step = session.get("step")
     reply_msg = None
 
@@ -671,7 +675,7 @@ def handle_message(event):
             ),
         )
       else:
-        user_sessions[user_id] = {"step": "WAITING_SYMPTOM"}
+        user_sessions[user_id] = {"step": "WAITING_SYMPTOM", "_updated_at": now}
         reply_msg = TextMessage(
             text=(
                 "ยินดีต้อนรับสู่คลินิกกายภาพบำบัดค่ะ 🏥\n\n"
@@ -832,6 +836,12 @@ def handle_message(event):
     # --- 6. คนไข้เดิมพิมพ์อาการใหม่ ---
     elif current_step == "WAITING_NEW_SYMPTOM":
       clean_symptom = clean_text(user_text)
+      if not clean_symptom or any(inv in clean_symptom.lower() for inv in INVALID_SYMPTOMS):
+        reply_msg = TextMessage(text="กรุณาระบุอาการหรือบริเวณที่มีปัญหาเพิ่มเติมได้เลยค่ะ")
+        line_bot_api.reply_message(
+            ReplyMessageRequest(reply_token=event.reply_token, messages=[reply_msg])
+        )
+        return
       session["symptom"] = clean_symptom
       session["step"] = "WAITING_DATETIME"
       user_sessions[user_id] = session
@@ -847,9 +857,16 @@ def handle_message(event):
     # --- 7. สำหรับคนไข้ใหม่: รอรับอาการ ---
     elif current_step == "WAITING_SYMPTOM":
       clean_symptom = clean_text(user_text)
+      if not clean_symptom or any(inv in clean_symptom.lower() for inv in INVALID_SYMPTOMS):
+        reply_msg = TextMessage(text="กรุณาระบุอาการหรือบริเวณที่มีปัญหาเพิ่มเติมได้เลยค่ะ")
+        line_bot_api.reply_message(
+            ReplyMessageRequest(reply_token=event.reply_token, messages=[reply_msg])
+        )
+        return
       user_sessions[user_id] = {
           "step": "WAITING_CONTACT",
           "symptom": clean_symptom,
+          "_updated_at": now,
       }
       reply_msg = TextMessage(
           text=(
@@ -888,21 +905,18 @@ def handle_message(event):
     # --- 9. ขั้นตอนบันทึกวันเวลานัดหมาย ---
     elif current_step == "WAITING_DATETIME":
       appointment_time = clean_text(user_text)
+      if not appointment_time or len(appointment_time) < 3:
+        reply_msg = TextMessage(
+            text="กรุณาระบุวันและเวลาที่สะดวกให้ชัดเจนอีกครั้งนะคะ เช่น วันเสาร์นี้ 14:00 น."
+        )
+        line_bot_api.reply_message(
+            ReplyMessageRequest(reply_token=event.reply_token, messages=[reply_msg])
+        )
+        return
       name = session.get("name", "คนไข้ผ่าน LINE")
       phone = session.get("phone", "-")
       symptom = session.get("symptom", "ไม่ได้ระบุ")
       timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-      # อัปเดตแคชทันที
-      now = time.time()
-      patient_profile_cache[user_id] = {
-          "data": {
-              "name": name,
-              "phone": phone,
-              "last_symptom": clean_symptom_text(symptom),
-          },
-          "time": now,
-      }
 
       row = [
           timestamp,
@@ -914,25 +928,34 @@ def handle_message(event):
           "รอยืนยัน",
           "นัดหมายผ่าน LINE",
       ]
-      threading.Thread(
-          target=_sync_booking_to_sheets,
-          args=(row,),
-          daemon=True,
-      ).start()
-
-      user_sessions.pop(user_id, None)
-
-      reply_msg = TextMessage(
-          text=(
-              "✅ บันทึกคำขอนัดหมายเรียบร้อยแล้วค่ะ!\n\n"
+      if _sync_booking_to_sheets(row):
+        patient_profile_cache[user_id] = {
+            "data": {
+                "name": name,
+                "phone": phone,
+                "last_symptom": clean_symptom_text(symptom),
+            },
+            "time": time.time(),
+        }
+        user_sessions.pop(user_id, None)
+        reply_msg = TextMessage(
+            text=(
+                "✅ บันทึกคำขอนัดหมายเรียบร้อยแล้วค่ะ!\n\n"
               f"👤 ชื่อ: {name}\n"
               f"📞 เบอร์โทร: {phone}\n"
               f"🩺 อาการ: {symptom}\n"
               f"📅 วัน-เวลาที่สะดวก: {appointment_time}\n\n"
               "ทางคลินิกจะตรวจสอบตารางนัดและติดต่อยืนยันคิวให้โดยเร็วที่สุดค่ะ ขอบคุณค่ะ 🙏\n\n"
               "(หากต้องการแก้ไขชื่อหรือเบอร์โทร สามารถพิมพ์ 'แก้ไขข้อมูล' ได้ตลอดเวลานะคะ)"
-          )
-      )
+            )
+        )
+      else:
+        reply_msg = TextMessage(
+            text=(
+                "ขออภัยค่ะ ระบบยังบันทึกคำขอนัดหมายไม่สำเร็จ\n"
+                "กรุณาลองส่งวันและเวลาที่สะดวกอีกครั้งในภายหลังนะคะ"
+            )
+        )
 
     # --- 10. กรณีถามคำถามอื่นๆ (ส่งให้ Gemini AI ตอบคำถามกายภาพบำบัด) ---
     else:
