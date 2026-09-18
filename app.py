@@ -88,6 +88,16 @@ else:
 user_sessions = {}
 patient_profile_cache = {}  # {user_id: {"data": profile_dict, "time": float}}
 
+CANCEL_KEYWORDS = [
+    "ยกเลิก",
+    "ไม่จอง",
+    "ไม่นัด",
+    "หยุดก่อน",
+    "ออก",
+    "ยกเลิกนัด",
+    "ยกเลิกการจอง",
+]
+
 EDIT_KEYWORDS = [
     "แก้ไขชื่อ",
     "เปลี่ยนชื่อ",
@@ -105,6 +115,25 @@ EDIT_KEYWORDS = [
     "อัพเดทชื่อ",
 ]
 
+INVALID_SYMPTOMS = [
+    "ยกเลิก",
+    "ไม่จอง",
+    "รอยืนยัน",
+    "คนไข้ผ่าน line",
+    "ทดสอบ",
+    "สวัสดี",
+    "เปลี่ยนชื่อ",
+    "แก้ชื่อ",
+    "แก้เบอร์",
+    "ลงทะเบียนข้อมูล",
+    "บันทึกประวัติ",
+    "-",
+    "ไม่มี",
+    "แม่ง",
+    "รวน",
+    "ได้ไหม",
+]
+
 
 def clean_text(text: str) -> str:
   """ตัดคำลงท้ายออกจากท้ายประโยค"""
@@ -112,6 +141,14 @@ def clean_text(text: str) -> str:
       r"(\s*(นะคะ|นะครับ|ครับผม|ค่ะ|ครับ|ค่า|ค้า|ค๊า|คับ|คั้บ|งับ|จ้า|จ้ะ|ฮะ|นะ))+\s*$"
   )
   return re.sub(pattern, "", text.strip()).strip()
+
+
+def clean_symptom_text(symptom: str) -> str:
+  """ล้างคำซ้ำซ้อนในอาการ เช่น (รักษาต่อเนื่อง) หลายรอบ"""
+  if not symptom:
+    return "ตรวจประเมินร่างกาย"
+  cleaned = re.sub(r"(\s*\(รักษาต่อเนื่อง\))+", "", symptom).strip()
+  return cleaned if cleaned else "ตรวจประเมินร่างกาย"
 
 
 def extract_contact_info(
@@ -148,7 +185,7 @@ def extract_contact_info(
 
 
 def get_patient_profile(user_id: str):
-  """ค้นหาประวัติคนไข้เดิมจาก Cache หรือ Google Sheet ด้วย LINE User ID"""
+  """ค้นหาประวัติคนไข้เดิมจาก Cache หรือ Google Sheet โดยกรองอาการที่เป็นข้อความขยะออก"""
   now = time.time()
   if user_id in patient_profile_cache:
     cached = patient_profile_cache[user_id]
@@ -159,6 +196,7 @@ def get_patient_profile(user_id: str):
     return None
   try:
     records = sheet.get_all_values()
+    # หาแถวล่าสุดที่มีอาการจริง (ไม่ใช่อาการขยะ เช่น ยกเลิก หรือ สวัสดี)
     for row in reversed(records[1:]):
       if len(row) >= 5:
         r_time, r_uid, r_name, r_phone, r_symptom = row[:5]
@@ -169,13 +207,30 @@ def get_patient_profile(user_id: str):
               and r_phone
               and r_phone != "-"
           ):
+            sym_clean = clean_symptom_text(r_symptom)
+            if any(inv in sym_clean.lower() for inv in INVALID_SYMPTOMS):
+              continue  # ข้ามแถวที่อาการไม่ใช่โรคหรืออาการจริง
+
             prof = {
                 "name": r_name,
                 "phone": r_phone,
-                "last_symptom": r_symptom or "อาการเดิม",
+                "last_symptom": sym_clean,
             }
             patient_profile_cache[user_id] = {"data": prof, "time": now}
             return prof
+
+    # หากไม่พบอาการจริง ให้ดึงชื่อและเบอร์มา แล้วใช้อาการมาตรฐาน
+    for row in reversed(records[1:]):
+      if len(row) >= 5 and row[1] == user_id:
+        r_name, r_phone = row[2], row[3]
+        if r_name and r_name != "คนไข้ผ่าน LINE" and r_phone and r_phone != "-":
+          prof = {
+              "name": r_name,
+              "phone": r_phone,
+              "last_symptom": "ตรวจประเมินร่างกาย",
+          }
+          patient_profile_cache[user_id] = {"data": prof, "time": now}
+          return prof
   except Exception as e:
     print(f"Error fetching profile: {e}")
   return None
@@ -185,7 +240,7 @@ def update_patient_profile(user_id: str, new_name: str, new_phone: str) -> bool:
   """อัปเดตชื่อและเบอร์โทรศัพท์ของคนไข้ใน Google Sheet และอัปเดตแคช"""
   now = time.time()
   old_prof = patient_profile_cache.get(user_id, {}).get("data", {})
-  last_symptom = old_prof.get("last_symptom", "อาการเดิม")
+  last_symptom = old_prof.get("last_symptom", "ตรวจประเมินร่างกาย")
   patient_profile_cache[user_id] = {
       "data": {
           "name": new_name,
@@ -301,10 +356,20 @@ def handle_message(event):
     current_step = session.get("step")
     reply_msg = None
 
-    # --- ขั้นที่ 0: ตรวจจับคำสั่งแก้ไขข้อมูล / เปลี่ยนชื่อ / เปลี่ยนเบอร์ โดยตรง ---
-    if any(k in user_text for k in EDIT_KEYWORDS) and current_step not in [
-        "WAITING_SYMPTOM",
-        "WAITING_NEW_SYMPTOM",
+    # --- 1. ตรวจจับคำสั่งยกเลิก (Cancel) สากลในทุกขั้นตอน ---
+    if any(k in user_text for k in CANCEL_KEYWORDS) and current_step is not None:
+      user_sessions.pop(user_id, None)
+      reply_msg = TextMessage(
+          text=(
+              "รับทราบการยกเลิกเรียบร้อยค่ะ 😊\n\n"
+              "หากต้องการปรึกษาอาการ ปรับสรีระ หรือนัดหมายตรวจร่างกายใหม่ "
+              "สามารถพิมพ์สอบถาม หรือพิมพ์ 'จองคิว' ได้ตลอดเวลานะคะ 🏥"
+          )
+      )
+
+    # --- 2. ตรวจจับคำสั่งแก้ไขชื่อ/เบอร์โทร (Edit Contact) สากลในทุกขั้นตอน ---
+    elif any(k in user_text for k in EDIT_KEYWORDS) and current_step not in [
+        "WAITING_EDIT_CONTACT"
     ]:
       profile = get_patient_profile(user_id)
       curr_name = profile["name"] if profile else session.get("name")
@@ -325,23 +390,24 @@ def handle_message(event):
       if curr_name and curr_phone:
         reply_msg = TextMessage(
             text=(
+                "สามารถเปลี่ยนชื่อหรือเบอร์โทรได้แน่นอนค่ะ 😊\n\n"
                 "ข้อมูลปัจจุบันของคุณในระบบ:\n"
                 f"👤 ชื่อ: {curr_name}\n"
                 f"📞 เบอร์โทร: {curr_phone}\n\n"
-                "กรุณาพิมพ์ 'ชื่อ-นามสกุล และเบอร์โทรศัพท์' ใหม่ที่ต้องการอัปเดตได้เลยค่ะ ✍️\n"
-                "(สามารถพิมพ์ทั้งชื่อและเบอร์ เช่น 'สมชาย ใจดี 0891234567' หรือพิมพ์เฉพาะเบอร์ใหม่/ชื่อใหม่ก็ได้นะคะ)"
+                "กรุณาพิมพ์ 'ชื่อ-นามสกุล และเบอร์โทรศัพท์' ใหม่ที่ต้องการได้เลยค่ะ ✍️\n"
+                "(สามารถพิมพ์ทั้งชื่อและเบอร์ เช่น 'สมชาย ใจดี 0891234567' หรือพิมพ์เฉพาะชื่อใหม่/เบอร์ใหม่ก็ได้นะคะ)"
             )
         )
       else:
         reply_msg = TextMessage(
             text=(
                 "ยังไม่พบข้อมูลประวัติเดิมในระบบค่ะ 🏥\n\n"
-                "กรุณาพิมพ์ 'ชื่อ-นามสกุล และเบอร์โทรศัพท์' เพื่อลงทะเบียนข้อมูลไว้ได้เลยค่ะ ✍️\n"
+                "กรุณาพิมพ์ 'ชื่อ-นามสกุล และเบอร์โทรศัพท์' เพื่อบันทึกข้อมูลไว้ได้เลยค่ะ ✍️\n"
                 "(ตัวอย่าง: ปวีณ์กร การเร็ว 0826569179)"
             )
         )
 
-    # --- กรณีอยู่ในขั้นตอนรอรับข้อมูลแก้ไขชื่อ/เบอร์ ---
+    # --- 3. ขั้นตอนรับข้อมูลชื่อ/เบอร์ใหม่ ---
     elif current_step == "WAITING_EDIT_CONTACT":
       curr_name = session.get("name")
       curr_phone = session.get("phone")
@@ -370,14 +436,14 @@ def handle_message(event):
         session["phone"] = new_phone
         update_patient_profile(user_id, new_name, new_phone)
 
+        # หากกำลังอยู่ในระหว่างการจองคิว ให้ดำเนินขั้นตอนต่อไป
         if session.get("symptom"):
           session["step"] = "WAITING_DATETIME"
           user_sessions[user_id] = session
           reply_msg = TextMessage(
               text=(
-                  "✅ อัปเดตข้อมูลเรียบร้อยแล้วค่ะ! ✨\n\n"
-                  f"👤 ชื่อ: {new_name}\n"
-                  f"📞 เบอร์โทร: {new_phone}\n\n"
+                  "✅ อัปเดตข้อมูลเป็น คุณ"
+                  f" {new_name} (เบอร์: {new_phone}) เรียบร้อยแล้วค่ะ! ✨\n\n"
                   "สะดวกเข้ามาตรวจประเมินวันและเวลาใดดีคะ?\n"
                   "(ตัวอย่าง: วันเสาร์นี้ 14:00 น., 22 ก.ย. ช่วงบ่าย)"
               )
@@ -387,11 +453,10 @@ def handle_message(event):
           user_sessions[user_id] = session
           reply_msg = TextMessage(
               text=(
-                  "✅ อัปเดตข้อมูลเรียบร้อยแล้วค่ะ! ✨\n\n"
-                  f"👤 ชื่อ: {new_name}\n"
-                  f"📞 เบอร์โทร: {new_phone}\n\n"
-                  f"ต้องการนัดหมายรักษาอาการเดิม ({session.get('last_symptom')})\n"
-                  "หรือมีอาการใหม่แจ้งเพิ่มเติมคะ?"
+                  "✅ อัปเดตข้อมูลเป็น คุณ"
+                  f" {new_name} (เบอร์: {new_phone}) เรียบร้อยแล้วค่ะ! ✨\n\n"
+                  "ต้องการนัดหมายรักษาอาการเดิม"
+                  f" ({session.get('last_symptom')})\nหรือมีอาการใหม่แจ้งเพิ่มเติมคะ?"
               ),
               quick_reply=QuickReply(
                   items=[
@@ -419,14 +484,15 @@ def handle_message(event):
           user_sessions.pop(user_id, None)
           reply_msg = TextMessage(
               text=(
-                  "✅ อัปเดตข้อมูลเรียบร้อยแล้วค่ะ! ✨\n\n"
+                  "✅ บันทึกข้อมูลของคุณเรียบร้อยแล้วค่ะ! ✨\n\n"
                   f"👤 ชื่อ: {new_name}\n"
                   f"📞 เบอร์โทร: {new_phone}\n\n"
-                  "หากต้องการนัดหมายตรวจรักษากับนักกายภาพบำบัด สามารถพิมพ์ 'จองคิว' ได้เลยนะคะ 🏥"
+                  "หากต้องการนัดหมายตรวจรักษากับนักกายภาพบำบัด"
+                  " สามารถพิมพ์ 'จองคิว' ได้เลยนะคะ 🏥"
               )
           )
 
-    # --- ขั้นที่ 1: ตรวจจับคำว่า "จองคิว" หรือ "นัดหมาย" ---
+    # --- 4. ตรวจจับคำว่า 'จองคิว' หรือ 'นัดหมาย' ---
     elif any(keyword in user_text for keyword in ["จองคิว", "นัดหมาย", "ขอนัด"]):
       profile = get_patient_profile(user_id)
 
@@ -475,40 +541,106 @@ def handle_message(event):
             )
         )
 
-    # --- กรณีคนไข้เดิมเลือกตัวเลือก ---
+    # --- 5. กรณีคนไข้เดิมเลือกตัวเลือก (RETURNING_CHOICE) ---
     elif current_step == "RETURNING_CHOICE":
       if any(k in user_text for k in ["แก้ไข", "เปลี่ยน", "เบอร์", "ชื่อ"]):
         session["step"] = "WAITING_EDIT_CONTACT"
         user_sessions[user_id] = session
         reply_msg = TextMessage(
             text=(
+                "เปลี่ยนชื่อหรือเบอร์ได้แน่นอนค่ะ 😊\n"
                 "ข้อมูลปัจจุบันของคุณ:\n"
                 f"👤 ชื่อ: {session.get('name')}\n"
                 f"📞 เบอร์โทร: {session.get('phone')}\n\n"
                 "กรุณาพิมพ์ 'ชื่อ-นามสกุล และเบอร์โทรศัพท์' ใหม่ที่ต้องการแก้ไขได้เลยค่ะ ✍️\n"
-                "(สามารถพิมพ์ทั้งชื่อและเบอร์ เช่น 'สมชาย ใจดี 0891234567' หรือพิมพ์เฉพาะเบอร์/ชื่อใหม่ก็ได้นะคะ)"
+                "(สามารถพิมพ์ทั้งชื่อและเบอร์ เช่น 'สมชาย ใจดี 0891234567' หรือพิมพ์เฉพาะเบอร์ใหม่/ชื่อใหม่ก็ได้นะคะ)"
             )
         )
-      elif "อาการเดิม" in user_text:
+      elif (
+          "อาการเดิม" in user_text
+          or "รักษาต่อเนื่อง" in user_text
+          or "เดิม" in user_text
+      ):
         session["step"] = "WAITING_DATETIME"
         session["symptom"] = f"{session.get('last_symptom')} (รักษาต่อเนื่อง)"
         user_sessions[user_id] = session
 
         reply_msg = TextMessage(
             text=(
-                f"รับทราบค่ะคุณ {session.get('name')}\n\n"
-                "สะดวกเข้ามาตรวจรักษาอาการเดิมวันและเวลาใดดีคะ?\n"
+                f"รับทราบค่ะคุณ {session.get('name')}\n"
+                f"นัดหมายตรวจรักษา: {session['symptom']}\n\n"
+                "สะดวกเข้ามาตรวจวันและเวลาใดดีคะ?\n"
                 "(ตัวอย่าง: พรุ่งนี้ 14:00 น., วันเสาร์ช่วงเช้า)"
             )
         )
-      else:
+      elif any(k in user_text for k in ["อาการใหม่", "ใหม่"]):
         session["step"] = "WAITING_NEW_SYMPTOM"
         user_sessions[user_id] = session
         reply_msg = TextMessage(
             text="กรุณาพิมพ์ระบุอาการใหม่ที่ต้องการปรึกษาได้เลยค่ะ:"
         )
+      else:
+        # หากคนไข้พิมพ์ชื่ออาการใหม่มาเลยโดยตรง
+        clean_symptom = clean_text(user_text)
+        if len(clean_symptom) >= 2 and not any(
+            inv in clean_symptom.lower() for inv in INVALID_SYMPTOMS
+        ):
+          session["symptom"] = clean_symptom
+          session["step"] = "WAITING_DATETIME"
+          user_sessions[user_id] = session
+          reply_msg = TextMessage(
+              text=(
+                  f"รับทราบอาการใหม่: '{clean_symptom}' ค่ะ\n\n"
+                  "สะดวกเข้ามาตรวจวันและเวลาใดดีคะ? (เช่น พรุ่งนี้บ่ายสอง,"
+                  " วันอาทิตย์)"
+              )
+          )
+        else:
+          # ถ้าเป็นคำถามทั่วไป ส่งให้ Gemini ตอบ และแสดงปุ่มเลือกตัวเลือกเดิมต่อ
+          ans = None
+          if ai_client:
+            try:
+              res = ai_client.models.generate_content(
+                  model="gemini-2.5-flash",
+                  contents=user_text,
+                  config={
+                      "system_instruction": SYSTEM_INSTRUCTION,
+                      "max_output_tokens": 300,
+                  },
+              )
+              if res and res.text:
+                ans = res.text
+            except Exception:
+              pass
+          if not ans:
+            ans = "กรุณาเลือกตัวเลือกที่ต้องการ หรือพิมพ์ระบุอาการใหม่ได้เลยนะคะ"
 
-    # --- คนไข้เดิมพิมพ์อาการใหม่ ---
+          reply_msg = TextMessage(
+              text=ans,
+              quick_reply=QuickReply(
+                  items=[
+                      QuickReplyItem(
+                          action=MessageAction(
+                              label="นัดรักษาอาการเดิม",
+                              text="นัดรักษาอาการเดิม",
+                          )
+                      ),
+                      QuickReplyItem(
+                          action=MessageAction(
+                              label="แจ้งอาการใหม่", text="แจ้งอาการใหม่"
+                          )
+                      ),
+                      QuickReplyItem(
+                          action=MessageAction(
+                              label="แก้ไขชื่อ/เบอร์โทร",
+                              text="แก้ไขชื่อ/เบอร์โทร",
+                          )
+                      ),
+                  ]
+              ),
+          )
+
+    # --- 6. คนไข้เดิมพิมพ์อาการใหม่ ---
     elif current_step == "WAITING_NEW_SYMPTOM":
       clean_symptom = clean_text(user_text)
       session["symptom"] = clean_symptom
@@ -518,11 +650,12 @@ def handle_message(event):
       reply_msg = TextMessage(
           text=(
               f"รับทราบอาการใหม่: '{clean_symptom}' ค่ะ\n\n"
-              "สะดวกเข้ามาตรวจวันและเวลาใดดีคะ? (เช่น พรุ่งนี้บ่ายสอง, วันอาทิตย์)"
+              "สะดวกเข้ามาตรวจวันและเวลาใดดีคะ? (เช่น พรุ่งนี้บ่ายสอง,"
+              " วันอาทิตย์)"
           )
       )
 
-    # --- สำหรับคนไข้ใหม่: รอรับอาการ ---
+    # --- 7. สำหรับคนไข้ใหม่: รอรับอาการ ---
     elif current_step == "WAITING_SYMPTOM":
       clean_symptom = clean_text(user_text)
       user_sessions[user_id] = {
@@ -537,7 +670,7 @@ def handle_message(event):
           )
       )
 
-    # --- สำหรับคนไข้ใหม่: รอรับชื่อและเบอร์ ---
+    # --- 8. สำหรับคนไข้ใหม่: รอรับชื่อและเบอร์ ---
     elif current_step == "WAITING_CONTACT":
       name, phone = extract_contact_info(user_text)
       if phone and name and name != "คนไข้ผ่าน LINE":
@@ -563,78 +696,68 @@ def handle_message(event):
             )
         )
 
-    # --- ขั้นตอนบันทึกวันเวลานัดหมาย ---
+    # --- 9. ขั้นตอนบันทึกวันเวลานัดหมาย ---
     elif current_step == "WAITING_DATETIME":
-      if any(k in user_text for k in EDIT_KEYWORDS):
-        session["step"] = "WAITING_EDIT_CONTACT"
-        user_sessions[user_id] = session
-        reply_msg = TextMessage(
-            text=(
-                f"ข้อมูลปัจจุบัน: คุณ {session.get('name')} (เบอร์: {session.get('phone')})\n\n"
-                "กรุณาพิมพ์ 'ชื่อ-นามสกุล และเบอร์โทรศัพท์' ใหม่ที่ต้องการแก้ไขได้เลยค่ะ ✍️"
-            )
-        )
-      else:
-        appointment_time = clean_text(user_text)
-        name = session.get("name", "คนไข้ผ่าน LINE")
-        phone = session.get("phone", "-")
-        symptom = session.get("symptom", "ไม่ได้ระบุ")
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+      appointment_time = clean_text(user_text)
+      name = session.get("name", "คนไข้ผ่าน LINE")
+      phone = session.get("phone", "-")
+      symptom = session.get("symptom", "ไม่ได้ระบุ")
+      timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # อัปเดตแคชทันที
-        now = time.time()
-        patient_profile_cache[user_id] = {
-            "data": {
-                "name": name,
-                "phone": phone,
-                "last_symptom": symptom,
-            },
-            "time": now,
-        }
+      # อัปเดตแคชทันที
+      now = time.time()
+      patient_profile_cache[user_id] = {
+          "data": {
+              "name": name,
+              "phone": phone,
+              "last_symptom": clean_symptom_text(symptom),
+          },
+          "time": now,
+      }
 
-        row = [
-            timestamp,
-            user_id,
-            name,
-            phone,
-            symptom,
-            appointment_time,
-            "รอยืนยัน",
-            "นัดหมายผ่าน LINE",
-        ]
-        if sheet:
+      row = [
+          timestamp,
+          user_id,
+          name,
+          phone,
+          symptom,
+          appointment_time,
+          "รอยืนยัน",
+          "นัดหมายผ่าน LINE",
+      ]
+      if sheet:
+        try:
+          all_vals = sheet.get_all_values()
+          next_r = len(all_vals) + 1
+          for i, r_val in enumerate(all_vals, start=1):
+            if i > 1 and not any(r_val):
+              next_r = i
+              break
+          sheet.update(range_name=f"A{next_r}:H{next_r}", values=[row])
+        except Exception as e:
+          print(f"Error updating row to Google Sheets: {e}")
           try:
-            all_vals = sheet.get_all_values()
-            next_r = len(all_vals) + 1
-            for i, r_val in enumerate(all_vals, start=1):
-              if i > 1 and not any(r_val):
-                next_r = i
-                break
-            sheet.update(range_name=f"A{next_r}:H{next_r}", values=[row])
-          except Exception as e:
-            print(f"Error updating row to Google Sheets: {e}")
-            try:
-              sheet.append_row(row)
-            except Exception:
-              pass
-        else:
-          print("Warning: Google Sheet is not connected. Skipping append_row.")
+            sheet.append_row(row)
+          except Exception:
+            pass
+      else:
+        print("Warning: Google Sheet is not connected. Skipping append_row.")
 
-        user_sessions.pop(user_id, None)
+      user_sessions.pop(user_id, None)
 
-        reply_msg = TextMessage(
-            text=(
-                "✅ บันทึกคำขอนัดหมายเรียบร้อยแล้วค่ะ!\n\n"
-                f"👤 ชื่อ: {name}\n"
-                f"📞 เบอร์โทร: {phone}\n"
-                f"🩺 อาการ: {symptom}\n"
-                f"📅 วัน-เวลาที่สะดวก: {appointment_time}\n\n"
-                "ทางคลินิกจะตรวจสอบตารางนัดและติดต่อยืนยันคิวให้โดยเร็วที่สุดค่ะ ขอบคุณค่ะ 🙏\n\n"
-                "(หากต้องการแก้ไขชื่อหรือเบอร์โทร สามารถพิมพ์ 'แก้ไขข้อมูล' ได้ตลอดเวลานะคะ)"
-            )
-        )
+      reply_msg = TextMessage(
+          text=(
+              "✅ บันทึกคำขอนัดหมายเรียบร้อยแล้วค่ะ!\n\n"
+              f"👤 ชื่อ: {name}\n"
+              f"📞 เบอร์โทร: {phone}\n"
+              f"🩺 อาการ: {symptom}\n"
+              f"📅 วัน-เวลาที่สะดวก: {appointment_time}\n\n"
+              "ทางคลินิกจะตรวจสอบตารางนัดและติดต่อยืนยันคิวให้โดยเร็วที่สุดค่ะ ขอบคุณค่ะ 🙏\n\n"
+              "(หากต้องการแก้ไขชื่อหรือเบอร์โทร สามารถพิมพ์ 'แก้ไขข้อมูล' ได้ตลอดเวลานะคะ)"
+          )
+      )
 
-    # --- กรณีถามคำถามอื่นๆ (ส่งให้ Gemini AI ตอบคำถามกายภาพบำบัด) ---
+    # --- 10. กรณีถามคำถามอื่นๆ (ส่งให้ Gemini AI ตอบคำถามกายภาพบำบัด) ---
     else:
       reply_text = None
       if ai_client:
