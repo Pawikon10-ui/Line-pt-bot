@@ -4,6 +4,7 @@ import os
 import re
 import threading
 import time
+from typing import Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from google import genai
@@ -187,6 +188,17 @@ def clean_symptom_text(symptom: str) -> str:
     return "ตรวจประเมินร่างกาย"
   cleaned = re.sub(r"(\s*\(รักษาต่อเนื่อง\))+", "", symptom).strip()
   return cleaned if cleaned else "ตรวจประเมินร่างกาย"
+
+
+def get_visible_ai_text(response) -> Optional[str]:
+  """คืนเฉพาะข้อความคำตอบ ไม่รวม thought/thought signature ของ Gemini 3."""
+  for candidate in getattr(response, "candidates", None) or []:
+    content = getattr(candidate, "content", None)
+    for part in getattr(content, "parts", None) or []:
+      part_text = getattr(part, "text", None)
+      if part_text and not getattr(part, "thought", False):
+        return part_text.strip()
+  return None
 
 
 def extract_contact_info(
@@ -798,13 +810,13 @@ def handle_message(event):
                   contents=user_text,
                   config={
                       "system_instruction": SYSTEM_INSTRUCTION,
-                      "max_output_tokens": 300,
+                      # Gemini 3 counts thinking and answer tokens together.
+                      "max_output_tokens": 1024,
                   },
               )
-              if res and res.text:
-                ans = res.text
-            except Exception:
-              pass
+              ans = get_visible_ai_text(res)
+            except Exception as err:
+              print(f"Model gemini-3.6-flash error: {err}")
           if not ans:
             ans = "กรุณาเลือกตัวเลือกที่ต้องการ หรือพิมพ์ระบุอาการใหม่ได้เลยนะคะ"
 
@@ -969,11 +981,12 @@ def handle_message(event):
                 contents=user_text,
                 config={
                     "system_instruction": SYSTEM_INSTRUCTION,
-                    "max_output_tokens": 500,
+                    # Gemini 3 counts thinking and answer tokens together.
+                    "max_output_tokens": 1024,
                 },
             )
-            if ai_response and ai_response.text:
-              reply_text = ai_response.text
+            reply_text = get_visible_ai_text(ai_response)
+            if reply_text:
               break
           except Exception as err:
             print(f"Model {model_name} error: {err}")
