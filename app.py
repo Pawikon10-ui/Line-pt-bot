@@ -24,8 +24,13 @@ from linebot.v3.webhooks import FollowEvent, MessageEvent, TextMessageContent
 import uvicorn
 
 # --- 1. ข้อมูลการเชื่อมต่อ LINE & Gemini ---
-CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
-CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+CHANNEL_SECRET = os.getenv(
+    "LINE_CHANNEL_SECRET", "2636c41903dc0f636d6ebcf87f6a4dba"
+)
+CHANNEL_ACCESS_TOKEN = os.getenv(
+    "LINE_CHANNEL_ACCESS_TOKEN",
+    "iVq/zXeOkyImYHGBHyw0cUv+3RgZ+Xl2BCLzI64N6QER8VrDUsAR79yTubyn3MYNm1jml2Zd4h8HYJZEiU+tpw/PJUgJLeyR0B/OdKb3aQe/oSdbpzDQjiTfm8iCLjGstlNiAEtXbl3ccYbWxjgbIAdB04t89/1O/w1cDnyilFU=",
+)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
@@ -185,7 +190,7 @@ def extract_contact_info(
     raw_name = text.strip()
 
   cleaned_name = re.sub(
-      r"^(ชื่อ|คุณ|ติดต่อ|แก้ไขเป็น|เปลี่ยนเป็น|เปลี่ยนชื่อเป็น|แก้ชื่อเป็น|แก้เบอร์เป็น|ชื่อใหม่|เบอร์ใหม่|เปลี่ยนเบอร์|แก้เบอร์|แก้ไขเบอร์|เปลี่ยนชื่อ|แก้ชื่อ|แก้ไขชื่อ|เบอร์โทร|เบอร์โทรใหม่|โทร)\s*[:\s]*",
+      r"^(ชื่อ|คุณ|ติดต่อ|แก้ไขเป็น|เปลี่ยนเป็น|เปลี่ยนชื่อเป็น|แก้ชื่อเป็น|แก้เบอร์เป็น|เปลี่ยนเบอร์เป็น|ชื่อใหม่|เบอร์ใหม่|เบอร์ใหม่เป็น|เปลี่ยนเบอร์|แก้เบอร์|แก้ไขเบอร์|เปลี่ยนชื่อ|แก้ชื่อ|แก้ไขชื่อ|เบอร์โทร|เบอร์โทรใหม่|โทร|เป็น|คือ)\s*[:\s]*",
       "",
       raw_name,
   ).strip()
@@ -193,21 +198,25 @@ def extract_contact_info(
   cleaned_name = re.sub(
       r"^(ได้ไหม|ยังไง|หน่อย|ครับ|ค่ะ|คะ|นะ)+\s*$", "", cleaned_name
   ).strip()
+  cleaned_name = re.sub(
+      r"^(เป็น|คือ|ชื่อ|เบอร์)\s*", "", cleaned_name
+  ).strip()
 
   # ตรวจสอบว่า cleaned_name ต้องไม่ใช่คำสั่ง คำในเมนู คำยกเลิก หรือคำทั่วไป
-  is_invalid_name = any(
-      k in cleaned_name
-      for k in EDIT_KEYWORDS
-      + CANCEL_KEYWORDS
-      + MENU_KEYWORDS
-      + ["แก้ไข", "เปลี่ยน", "เบอร์", "ชื่อ", "ข้อมูล"]
+  is_invalid_name = (
+      not cleaned_name
+      or len(cleaned_name) < 2
+      or cleaned_name in ["เป็น", "คือ", "เบอร์", "ชื่อ", "แก้ไข", "เปลี่ยน", "ข้อมูล", "ใหม่"]
+      or any(
+          k in cleaned_name
+          for k in EDIT_KEYWORDS
+          + CANCEL_KEYWORDS
+          + MENU_KEYWORDS
+          + ["แก้ไข", "เปลี่ยน", "เบอร์", "ชื่อ", "ข้อมูล"]
+      )
   )
 
-  if (
-      cleaned_name
-      and len(cleaned_name) >= 2
-      and not is_invalid_name
-  ):
+  if not is_invalid_name:
     name = cleaned_name
   else:
     name = default_name
