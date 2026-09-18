@@ -363,8 +363,8 @@ def _sync_booking_to_sheets(row: list):
 app = FastAPI()
 
 
-@app.get("/")
-@app.get("/ping")
+@app.api_route("/", methods=["GET", "HEAD", "POST"])
+@app.api_route("/ping", methods=["GET", "HEAD", "POST"])
 async def ping():
   """Healthcheck endpoint สำหรับ UptimeRobot หรือ Cron Ping ป้องกัน Render หลับ"""
   return {"status": "ok", "message": "LINE PT Bot is awake!"}
