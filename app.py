@@ -794,7 +794,7 @@ def handle_message(event):
           if ai_client:
             try:
               res = ai_client.models.generate_content(
-                  model="gemini-2.5-flash",
+                  model="gemini-3.6-flash",
                   contents=user_text,
                   config={
                       "system_instruction": SYSTEM_INSTRUCTION,
@@ -961,10 +961,7 @@ def handle_message(event):
     else:
       reply_text = None
       if ai_client:
-        candidate_models = [
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
-        ]
+        candidate_models = ["gemini-3.6-flash"]
         for model_name in candidate_models:
           try:
             ai_response = ai_client.models.generate_content(
