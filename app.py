@@ -24,13 +24,8 @@ from linebot.v3.webhooks import FollowEvent, MessageEvent, TextMessageContent
 import uvicorn
 
 # --- 1. ข้อมูลการเชื่อมต่อ LINE & Gemini ---
-CHANNEL_SECRET = os.getenv(
-    "LINE_CHANNEL_SECRET", "2636c41903dc0f636d6ebcf87f6a4dba"
-)
-CHANNEL_ACCESS_TOKEN = os.getenv(
-    "LINE_CHANNEL_ACCESS_TOKEN",
-    "iVq/zXeOkyImYHGBHyw0cUv+3RgZ+Xl2BCLzI64N6QER8VrDUsAR79yTubyn3MYNm1jml2Zd4h8HYJZEiU+tpw/PJUgJLeyR0B/OdKb3aQe/oSdbpzDQjiTfm8iCLjGstlNiAEtXbl3ccYbWxjgbIAdB04t89/1O/w1cDnyilFU=",
-)
+CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
@@ -146,6 +141,17 @@ INVALID_SYMPTOMS = [
     "ได้ไหม",
 ]
 
+MENU_KEYWORDS = [
+    "แจ้งอาการใหม่",
+    "นัดรักษาอาการเดิม",
+    "แก้ไขชื่อ/เบอร์โทร",
+    "อาการใหม่",
+    "อาการเดิม",
+    "รักษาต่อเนื่อง",
+    "จองคิว",
+    "นัดหมาย",
+]
+
 
 def clean_text(text: str) -> str:
   """ตัดคำลงท้ายออกจากท้ายประโยค"""
@@ -188,13 +194,19 @@ def extract_contact_info(
       r"^(ได้ไหม|ยังไง|หน่อย|ครับ|ค่ะ|คะ|นะ)+\s*$", "", cleaned_name
   ).strip()
 
+  # ตรวจสอบว่า cleaned_name ต้องไม่ใช่คำสั่ง คำในเมนู คำยกเลิก หรือคำทั่วไป
+  is_invalid_name = any(
+      k in cleaned_name
+      for k in EDIT_KEYWORDS
+      + CANCEL_KEYWORDS
+      + MENU_KEYWORDS
+      + ["แก้ไข", "เปลี่ยน", "เบอร์", "ชื่อ", "ข้อมูล"]
+  )
+
   if (
       cleaned_name
       and len(cleaned_name) >= 2
-      and not any(
-          k == cleaned_name
-          for k in ["แก้ไข", "เปลี่ยน", "เบอร์", "ชื่อ", "ข้อมูล"]
-      )
+      and not is_invalid_name
   ):
     name = cleaned_name
   else:
@@ -632,66 +644,8 @@ def handle_message(event):
 
     # --- 5. กรณีคนไข้เดิมเลือกตัวเลือก (RETURNING_CHOICE) ---
     elif current_step == "RETURNING_CHOICE":
-      new_name, new_phone = extract_contact_info(
-          user_text, session.get("name"), session.get("phone")
-      )
-
-      # กรณีคนไข้พิมพ์ชื่อใหม่หรือเบอร์ใหม่มาเลยในขั้นตอนนี้
+      # 5.1 นัดรักษาอาการเดิม
       if (
-          session.get("name")
-          and (
-              new_name != session.get("name")
-              or new_phone != session.get("phone")
-          )
-          and new_name
-          and new_phone
-      ):
-        session["name"] = new_name
-        session["phone"] = new_phone
-        update_patient_profile(user_id, new_name, new_phone)
-        reply_msg = TextMessage(
-            text=(
-                f"✅ อัปเดตข้อมูลเป็น คุณ {new_name} (เบอร์: {new_phone}) เรียบร้อยแล้วค่ะ! ✨\n\n"
-                f"ต้องการนัดหมายรักษาอาการเดิม ({session.get('last_symptom')})\n"
-                "หรือมีอาการใหม่แจ้งเพิ่มเติมคะ?"
-            ),
-            quick_reply=QuickReply(
-                items=[
-                    QuickReplyItem(
-                        action=MessageAction(
-                            label="นัดรักษาอาการเดิม",
-                            text="นัดรักษาอาการเดิม",
-                        )
-                    ),
-                    QuickReplyItem(
-                        action=MessageAction(
-                            label="แจ้งอาการใหม่", text="แจ้งอาการใหม่"
-                        )
-                    ),
-                    QuickReplyItem(
-                        action=MessageAction(
-                            label="แก้ไขชื่อ/เบอร์โทร",
-                            text="แก้ไขชื่อ/เบอร์โทร",
-                        )
-                    ),
-                ]
-            ),
-        )
-      elif any(k in user_text for k in ["แก้ไข", "เปลี่ยน", "เบอร์", "ชื่อ"]):
-        session["step"] = "WAITING_EDIT_CONTACT"
-        user_sessions[user_id] = session
-        reply_msg = TextMessage(
-            text=(
-                "สามารถเปลี่ยนชื่อหรือเบอร์โทรได้ทันทีเลยค่ะ 😊\n"
-                "*(ไม่ต้องพิมพ์ชื่อเดิมนะคะ)*\n\n"
-                f"📌 ข้อมูลปัจจุบันของคุณ: คุณ {session.get('name')} (เบอร์: {session.get('phone')})\n\n"
-                "เพียงพิมพ์ข้อมูลใหม่ส่งมาได้เลยค่ะ:\n"
-                "👉 พิมพ์เฉพาะชื่อ-นามสกุลใหม่ (เช่น ปวีณ์กร การเร็ว)\n"
-                "👉 หรือพิมพ์เฉพาะเบอร์โทรใหม่ (เช่น 0891234567)\n"
-                "👉 หรือพิมพ์ทั้งชื่อและเบอร์ใหม่พร้อมกันได้เลยค่ะ ✍️"
-            )
-        )
-      elif (
           "อาการเดิม" in user_text
           or "รักษาต่อเนื่อง" in user_text
           or "เดิม" in user_text
@@ -708,14 +662,77 @@ def handle_message(event):
                 "(ตัวอย่าง: พรุ่งนี้ 14:00 น., วันเสาร์ช่วงเช้า)"
             )
         )
+
+      # 5.2 แจ้งอาการใหม่
       elif any(k in user_text for k in ["อาการใหม่", "ใหม่"]):
         session["step"] = "WAITING_NEW_SYMPTOM"
         user_sessions[user_id] = session
         reply_msg = TextMessage(
             text="กรุณาพิมพ์ระบุอาการใหม่ที่ต้องการปรึกษาได้เลยค่ะ:"
         )
+
+      # 5.3 เลือกแก้ไขข้อมูลส่วนตัว หรือพิมพ์เบอร์ใหม่/ชื่อใหม่
+      elif any(k in user_text for k in EDIT_KEYWORDS + ["แก้ไข", "เปลี่ยน", "เบอร์", "ชื่อ", "ข้อมูล"]) or re.search(r"0[689]\d{1}[- ]?\d{3}[- ]?\d{4}|0\d{9}", user_text):
+        new_name, new_phone = extract_contact_info(
+            user_text, session.get("name"), session.get("phone")
+        )
+        if (
+            session.get("name")
+            and (
+                new_name != session.get("name")
+                or new_phone != session.get("phone")
+            )
+            and new_name
+            and new_phone
+        ):
+          session["name"] = new_name
+          session["phone"] = new_phone
+          update_patient_profile(user_id, new_name, new_phone)
+          reply_msg = TextMessage(
+              text=(
+                  f"✅ อัปเดตข้อมูลเป็น คุณ {new_name} (เบอร์: {new_phone}) เรียบร้อยแล้วค่ะ! ✨\n\n"
+                  f"ต้องการนัดหมายรักษาอาการเดิม ({session.get('last_symptom')})\n"
+                  "หรือมีอาการใหม่แจ้งเพิ่มเติมคะ?"
+              ),
+              quick_reply=QuickReply(
+                  items=[
+                      QuickReplyItem(
+                          action=MessageAction(
+                              label="นัดรักษาอาการเดิม",
+                              text="นัดรักษาอาการเดิม",
+                          )
+                      ),
+                      QuickReplyItem(
+                          action=MessageAction(
+                              label="แจ้งอาการใหม่", text="แจ้งอาการใหม่"
+                          )
+                      ),
+                      QuickReplyItem(
+                          action=MessageAction(
+                              label="แก้ไขชื่อ/เบอร์โทร",
+                              text="แก้ไขชื่อ/เบอร์โทร",
+                          )
+                      ),
+                  ]
+              ),
+          )
+        else:
+          session["step"] = "WAITING_EDIT_CONTACT"
+          user_sessions[user_id] = session
+          reply_msg = TextMessage(
+              text=(
+                  "สามารถเปลี่ยนชื่อหรือเบอร์โทรได้ทันทีเลยค่ะ 😊\n"
+                  "*(ไม่ต้องพิมพ์ชื่อเดิมนะคะ)*\n\n"
+                  f"📌 ข้อมูลปัจจุบันของคุณ: คุณ {session.get('name')} (เบอร์: {session.get('phone')})\n\n"
+                  "เพียงพิมพ์ข้อมูลใหม่ส่งมาได้เลยค่ะ:\n"
+                  "👉 พิมพ์เฉพาะชื่อ-นามสกุลใหม่ (เช่น ปวีณ์กร การเร็ว)\n"
+                  "👉 หรือพิมพ์เฉพาะเบอร์โทรใหม่ (เช่น 0891234567)\n"
+                  "👉 หรือพิมพ์ทั้งชื่อและเบอร์ใหม่พร้อมกันได้เลยค่ะ ✍️"
+              )
+          )
+
+      # 5.4 พิมพ์ชื่ออาการใหม่มาเลยโดยตรง (เช่น ปวดสะบัก, ไหล่ติด)
       else:
-        # หากคนไข้พิมพ์ชื่ออาการใหม่มาเลยโดยตรง
         clean_symptom = clean_text(user_text)
         if len(clean_symptom) >= 2 and not any(
             inv in clean_symptom.lower() for inv in INVALID_SYMPTOMS
