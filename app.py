@@ -2,6 +2,7 @@ from datetime import datetime
 import json
 import os
 import re
+import threading
 import time
 from fastapi import FastAPI, Header, HTTPException, Request
 from google import genai
@@ -232,7 +233,7 @@ def get_patient_profile(user_id: str):
   now = time.time()
   if user_id in patient_profile_cache:
     cached = patient_profile_cache[user_id]
-    if now - cached["time"] < 300:  # แคชไว้ 5 นาทีเพื่อความรวดเร็ว
+    if now - cached["time"] < 1800:  # แคชไว้ 30 นาทีเพื่อความรวดเร็ว
       return cached["data"]
 
   if not sheet:
@@ -279,22 +280,10 @@ def get_patient_profile(user_id: str):
   return None
 
 
-def update_patient_profile(user_id: str, new_name: str, new_phone: str) -> bool:
-  """อัปเดตชื่อและเบอร์โทรศัพท์ของคนไข้ใน Google Sheet และอัปเดตแคช"""
-  now = time.time()
-  old_prof = patient_profile_cache.get(user_id, {}).get("data", {})
-  last_symptom = old_prof.get("last_symptom", "ตรวจประเมินร่างกาย")
-  patient_profile_cache[user_id] = {
-      "data": {
-          "name": new_name,
-          "phone": new_phone,
-          "last_symptom": last_symptom,
-      },
-      "time": now,
-  }
-
+def _sync_profile_to_sheets(user_id: str, new_name: str, new_phone: str):
+  """ซิงค์ข้อมูลคนไข้ลง Google Sheets ในเบื้องหลัง (Background Thread)"""
   if not sheet:
-    return False
+    return
   try:
     records = sheet.get_all_values()
     target_row_idx = None
@@ -307,7 +296,6 @@ def update_patient_profile(user_id: str, new_name: str, new_phone: str) -> bool:
           range_name=f"C{target_row_idx}:D{target_row_idx}",
           values=[[new_name, new_phone]],
       )
-      return True
     else:
       timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
       row = [
@@ -327,10 +315,49 @@ def update_patient_profile(user_id: str, new_name: str, new_phone: str) -> bool:
           next_r = i
           break
       sheet.update(range_name=f"A{next_r}:H{next_r}", values=[row])
-      return True
   except Exception as e:
     print(f"Error updating patient profile in Google Sheets: {e}")
-    return False
+
+
+def update_patient_profile(user_id: str, new_name: str, new_phone: str) -> bool:
+  """อัปเดต Cache ทันทีเพื่อให้บอทตอบได้แบบ Real-time และบันทึกลง Sheet ในเบื้องหลัง"""
+  now = time.time()
+  old_prof = patient_profile_cache.get(user_id, {}).get("data", {})
+  last_symptom = old_prof.get("last_symptom", "ตรวจประเมินร่างกาย")
+  patient_profile_cache[user_id] = {
+      "data": {
+          "name": new_name,
+          "phone": new_phone,
+          "last_symptom": last_symptom,
+      },
+      "time": now,
+  }
+  threading.Thread(
+      target=_sync_profile_to_sheets,
+      args=(user_id, new_name, new_phone),
+      daemon=True,
+  ).start()
+  return True
+
+
+def _sync_booking_to_sheets(row: list):
+  """ซิงค์ข้อมูลการจองลง Google Sheets ในเบื้องหลัง (Background Thread)"""
+  if not sheet:
+    return
+  try:
+    all_vals = sheet.get_all_values()
+    next_r = len(all_vals) + 1
+    for i, r_val in enumerate(all_vals, start=1):
+      if i > 1 and not any(r_val):
+        next_r = i
+        break
+    sheet.update(range_name=f"A{next_r}:H{next_r}", values=[row])
+  except Exception as e:
+    print(f"Error updating row to Google Sheets: {e}")
+    try:
+      sheet.append_row(row)
+    except Exception:
+      pass
 
 
 app = FastAPI()
@@ -387,11 +414,13 @@ def handle_message(event):
   with ApiClient(configuration) as api_client:
     line_bot_api = MessagingApi(api_client)
 
-    # ส่ง Loading animation (จุดสามจุดกำลังพิมพ์...) ให้ผู้ใช้เห็นทันที
+    # ส่ง Loading animation (จุดสามจุดกำลังพิมพ์...) ใน Background Thread
     try:
-      line_bot_api.show_loading_animation(
-          ShowLoadingAnimationRequest(chat_id=user_id, loading_seconds=15)
-      )
+      threading.Thread(
+          target=line_bot_api.show_loading_animation,
+          args=(ShowLoadingAnimationRequest(chat_id=user_id, loading_seconds=15),),
+          daemon=True,
+      ).start()
     except Exception:
       pass
 
@@ -885,23 +914,11 @@ def handle_message(event):
           "รอยืนยัน",
           "นัดหมายผ่าน LINE",
       ]
-      if sheet:
-        try:
-          all_vals = sheet.get_all_values()
-          next_r = len(all_vals) + 1
-          for i, r_val in enumerate(all_vals, start=1):
-            if i > 1 and not any(r_val):
-              next_r = i
-              break
-          sheet.update(range_name=f"A{next_r}:H{next_r}", values=[row])
-        except Exception as e:
-          print(f"Error updating row to Google Sheets: {e}")
-          try:
-            sheet.append_row(row)
-          except Exception:
-            pass
-      else:
-        print("Warning: Google Sheet is not connected. Skipping append_row.")
+      threading.Thread(
+          target=_sync_booking_to_sheets,
+          args=(row,),
+          daemon=True,
+      ).start()
 
       user_sessions.pop(user_id, None)
 
@@ -923,9 +940,7 @@ def handle_message(event):
       if ai_client:
         candidate_models = [
             "gemini-2.5-flash",
-            "gemini-flash-latest",
             "gemini-2.0-flash",
-            "gemini-1.5-flash",
         ]
         for model_name in candidate_models:
           try:
