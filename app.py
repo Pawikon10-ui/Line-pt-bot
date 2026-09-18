@@ -53,6 +53,9 @@ SYSTEM_INSTRUCTION = """
 4. หากพบอาการสัญญาณอันตราย (Red Flags เช่น กลั้นปัสสาวะ/อุจจาระไม่ได้, แขนขาอ่อนแรงฉับพลัน, ชาเป็นบริเวณกว้าง, ปวดรุนแรงหลังอุบัติเหตุ) ให้แนะนำพบแพทย์ทันที
 5. ตอบให้กระชับ ชัดเจน ตรงประเด็น ใช้ bullet point สั้นๆ
 6. ในตอนท้ายของคำตอบ ให้เชิญชวนอย่างนุ่มนวลว่า "หากต้องการตรวจประเมินร่างกายอย่างละเอียดกับนักกายภาพบำบัด สามารถพิมพ์ 'จองคิว' ได้เลยนะคะ"
+7. หากคนไข้สอบถามเกี่ยวกับการเปลี่ยนชื่อ เปลี่ยนเบอร์โทร หรือแก้ไขข้อมูลส่วนตัว:
+   - ห้ามขอชื่อเดิม และห้ามบอกให้รอเจ้าหน้าที่เด็ดขาด
+   - ให้แจ้งอย่างชัดเจนว่า "สามารถเปลี่ยนได้ทันทีเลยค่ะ 😊 เพียงพิมพ์ 'ชื่อ-นามสกุลใหม่' ส่งมาในแชตนี้ได้เลยนะคะ (ไม่ต้องพิมพ์ชื่อเดิมค่ะ) หรือหากต้องการเปลี่ยนเบอร์ด้วย ก็สามารถพิมพ์เบอร์ใหม่ส่งมาได้เลยค่ะ ระบบจะบันทึกอัปเดตให้อัตโนมัติทันทีค่ะ"
 """
 
 # --- 2. ข้อมูลการเชื่อมต่อ Google Sheets ---
@@ -102,17 +105,26 @@ EDIT_KEYWORDS = [
     "แก้ไขชื่อ",
     "เปลี่ยนชื่อ",
     "แก้ชื่อ",
+    "ขอเปลี่ยนชื่อ",
+    "อยากเปลี่ยนชื่อ",
+    "เปลี่ยนชื่อยังไง",
     "แก้ไขเบอร์",
     "เปลี่ยนเบอร์",
     "แก้เบอร์",
+    "ขอเปลี่ยนเบอร์",
+    "อยากเปลี่ยนเบอร์",
+    "เปลี่ยนเบอร์ยังไง",
     "แก้ไขข้อมูล",
     "แก้ข้อมูล",
     "เปลี่ยนข้อมูล",
     "อัปเดตข้อมูล",
     "อัปเดตเบอร์",
+    "อัปเดตชื่อ",
     "อัพเดทข้อมูล",
     "อัพเดทเบอร์",
     "อัพเดทชื่อ",
+    "เปลี่ยนชื่อได้ไหม",
+    "เปลี่ยนเบอร์ได้ไหม",
 ]
 
 INVALID_SYMPTOMS = [
@@ -167,13 +179,23 @@ def extract_contact_info(
     raw_name = text.strip()
 
   cleaned_name = re.sub(
-      r"^(ชื่อ|คุณ|ติดต่อ|แก้ไขเป็น|เปลี่ยนเป็น|เปลี่ยนชื่อเป็น|แก้ชื่อเป็น|แก้เบอร์เป็น|ชื่อใหม่|เบอร์ใหม่)\s*[:\s]*",
+      r"^(ชื่อ|คุณ|ติดต่อ|แก้ไขเป็น|เปลี่ยนเป็น|เปลี่ยนชื่อเป็น|แก้ชื่อเป็น|แก้เบอร์เป็น|ชื่อใหม่|เบอร์ใหม่|เปลี่ยนเบอร์|แก้เบอร์|แก้ไขเบอร์|เปลี่ยนชื่อ|แก้ชื่อ|แก้ไขชื่อ|เบอร์โทร|เบอร์โทรใหม่|โทร)\s*[:\s]*",
       "",
       raw_name,
   ).strip()
   cleaned_name = clean_text(cleaned_name)
+  cleaned_name = re.sub(
+      r"^(ได้ไหม|ยังไง|หน่อย|ครับ|ค่ะ|คะ|นะ)+\s*$", "", cleaned_name
+  ).strip()
 
-  if cleaned_name and len(cleaned_name) >= 2:
+  if (
+      cleaned_name
+      and len(cleaned_name) >= 2
+      and not any(
+          k == cleaned_name
+          for k in ["แก้ไข", "เปลี่ยน", "เบอร์", "ชื่อ", "ข้อมูล"]
+      )
+  ):
     name = cleaned_name
   else:
     name = default_name
@@ -322,7 +344,7 @@ def handle_follow(event):
       "คุณสามารถ:\n"
       "💬 พิมพ์ปรึกษาอาการปวดเมื่อย ท่าบริหาร หรือข้อสงสัยทางกายภาพบำบัดได้เลยค่ะ\n"
       "📅 พิมพ์ 'จองคิว' เพื่อทำการนัดหมายตรวจประเมินกับนักกายภาพบำบัดค่ะ\n"
-      "⚙️ พิมพ์ 'แก้ไขข้อมูล' เพื่ออัปเดตชื่อหรือเบอร์โทรศัพท์ได้ตลอดเวลาค่ะ\n\n"
+      "⚙️ พิมพ์ 'แก้ไขข้อมูล' หรือ 'เปลี่ยนชื่อ' เพื่ออัปเดตข้อมูลส่วนตัวได้ตลอดเวลาค่ะ\n\n"
       "ยินดีดูแลสุขภาพร่างกายของคุณนะคะ 😊"
   )
   with ApiClient(configuration) as api_client:
@@ -375,37 +397,104 @@ def handle_message(event):
       curr_name = profile["name"] if profile else session.get("name")
       curr_phone = profile["phone"] if profile else session.get("phone")
 
-      user_sessions[user_id] = {
-          "step": "WAITING_EDIT_CONTACT",
-          "name": curr_name,
-          "phone": curr_phone,
-          "last_symptom": (
-              profile["last_symptom"]
-              if profile
-              else session.get("last_symptom")
-          ),
-          "symptom": session.get("symptom"),
-      }
+      # ตรวจสอบว่าผู้ใช้พิมพ์ชื่อใหม่หรือเบอร์ใหม่มาในข้อความนี้เลยหรือไม่
+      new_name, new_phone = extract_contact_info(
+          user_text, curr_name, curr_phone
+      )
+      if (
+          curr_name
+          and (new_name != curr_name or new_phone != curr_phone)
+          and new_name
+          and new_phone
+      ):
+        # มีการระบุชื่อใหม่หรือเบอร์ใหม่มาพร้อมคำสั่ง เช่น 'เปลี่ยนชื่อเป็น ปวีณ์กร การเร็ว'
+        update_patient_profile(user_id, new_name, new_phone)
+        session["name"] = new_name
+        session["phone"] = new_phone
+        user_sessions[user_id] = session
 
-      if curr_name and curr_phone:
-        reply_msg = TextMessage(
-            text=(
-                "สามารถเปลี่ยนชื่อหรือเบอร์โทรได้แน่นอนค่ะ 😊\n\n"
-                "ข้อมูลปัจจุบันของคุณในระบบ:\n"
-                f"👤 ชื่อ: {curr_name}\n"
-                f"📞 เบอร์โทร: {curr_phone}\n\n"
-                "กรุณาพิมพ์ 'ชื่อ-นามสกุล และเบอร์โทรศัพท์' ใหม่ที่ต้องการได้เลยค่ะ ✍️\n"
-                "(สามารถพิมพ์ทั้งชื่อและเบอร์ เช่น 'สมชาย ใจดี 0891234567' หรือพิมพ์เฉพาะชื่อใหม่/เบอร์ใหม่ก็ได้นะคะ)"
-            )
-        )
+        if session.get("symptom"):
+          session["step"] = "WAITING_DATETIME"
+          reply_msg = TextMessage(
+              text=(
+                  f"✅ อัปเดตข้อมูลเป็น คุณ {new_name} (เบอร์: {new_phone}) เรียบร้อยแล้วค่ะ! ✨\n\n"
+                  "สะดวกเข้ามาตรวจประเมินวันและเวลาใดดีคะ?\n"
+                  "(ตัวอย่าง: วันเสาร์นี้ 14:00 น., 22 ก.ย. ช่วงบ่าย)"
+              )
+          )
+        elif session.get("last_symptom"):
+          session["step"] = "RETURNING_CHOICE"
+          reply_msg = TextMessage(
+              text=(
+                  f"✅ อัปเดตข้อมูลเป็น คุณ {new_name} (เบอร์: {new_phone}) เรียบร้อยแล้วค่ะ! ✨\n\n"
+                  f"ต้องการนัดหมายรักษาอาการเดิม ({session.get('last_symptom')})\nหรือมีอาการใหม่แจ้งเพิ่มเติมคะ?"
+              ),
+              quick_reply=QuickReply(
+                  items=[
+                      QuickReplyItem(
+                          action=MessageAction(
+                              label="นัดรักษาอาการเดิม",
+                              text="นัดรักษาอาการเดิม",
+                          )
+                      ),
+                      QuickReplyItem(
+                          action=MessageAction(
+                              label="แจ้งอาการใหม่", text="แจ้งอาการใหม่"
+                          )
+                      ),
+                      QuickReplyItem(
+                          action=MessageAction(
+                              label="แก้ไขชื่อ/เบอร์โทร",
+                              text="แก้ไขชื่อ/เบอร์โทร",
+                          )
+                      ),
+                  ]
+              ),
+          )
+        else:
+          user_sessions.pop(user_id, None)
+          reply_msg = TextMessage(
+              text=(
+                  f"✅ อัปเดตข้อมูลเป็น คุณ {new_name} (เบอร์: {new_phone}) เรียบร้อยแล้วค่ะ! ✨\n\n"
+                  "หากต้องการนัดหมายตรวจรักษากับนักกายภาพบำบัด สามารถพิมพ์ 'จองคิว' ได้เลยนะคะ 🏥"
+              )
+          )
       else:
-        reply_msg = TextMessage(
-            text=(
-                "ยังไม่พบข้อมูลประวัติเดิมในระบบค่ะ 🏥\n\n"
-                "กรุณาพิมพ์ 'ชื่อ-นามสกุล และเบอร์โทรศัพท์' เพื่อบันทึกข้อมูลไว้ได้เลยค่ะ ✍️\n"
-                "(ตัวอย่าง: ปวีณ์กร การเร็ว 0826569179)"
-            )
-        )
+        # ยังไม่ได้ระบุชื่อหรือเบอร์ใหม่มา ให้แจ้งวิธีพิมพ์ที่เข้าใจง่าย
+        user_sessions[user_id] = {
+            "step": "WAITING_EDIT_CONTACT",
+            "name": curr_name,
+            "phone": curr_phone,
+            "last_symptom": (
+                profile["last_symptom"]
+                if profile
+                else session.get("last_symptom")
+            ),
+            "symptom": session.get("symptom"),
+        }
+
+        if curr_name and curr_phone:
+          reply_msg = TextMessage(
+              text=(
+                  "สามารถเปลี่ยนชื่อหรือเบอร์โทรได้ทันทีเลยค่ะ 😊\n"
+                  "*(ไม่ต้องพิมพ์ชื่อเดิมนะคะ)*\n\n"
+                  "📌 ข้อมูลปัจจุบันของคุณในระบบ:\n"
+                  f"👤 ชื่อ: {curr_name}\n"
+                  f"📞 เบอร์โทร: {curr_phone}\n\n"
+                  "เพียงพิมพ์ข้อมูลใหม่ส่งมาได้เลยค่ะ:\n"
+                  "👉 พิมพ์เฉพาะชื่อ-นามสกุลใหม่ (เช่น ปวีณ์กร การเร็ว)\n"
+                  "👉 หรือพิมพ์เฉพาะเบอร์โทรใหม่ 10 หลัก (เช่น 0891234567)\n"
+                  "👉 หรือพิมพ์ทั้งชื่อและเบอร์ใหม่พร้อมกันได้เลยค่ะ ✍️"
+              )
+          )
+        else:
+          reply_msg = TextMessage(
+              text=(
+                  "ยังไม่พบข้อมูลประวัติเดิมในระบบค่ะ 🏥\n\n"
+                  "คุณสามารถพิมพ์ 'ชื่อ-นามสกุล' หรือ 'ชื่อพร้อมเบอร์โทร' เพื่อบันทึกข้อมูลได้เลยค่ะ ✍️\n"
+                  "(ตัวอย่าง: ปวีณ์กร การเร็ว 0826569179)"
+              )
+          )
 
     # --- 3. ขั้นตอนรับข้อมูลชื่อ/เบอร์ใหม่ ---
     elif current_step == "WAITING_EDIT_CONTACT":
@@ -484,9 +573,8 @@ def handle_message(event):
           user_sessions.pop(user_id, None)
           reply_msg = TextMessage(
               text=(
-                  "✅ บันทึกข้อมูลของคุณเรียบร้อยแล้วค่ะ! ✨\n\n"
-                  f"👤 ชื่อ: {new_name}\n"
-                  f"📞 เบอร์โทร: {new_phone}\n\n"
+                  "✅ อัปเดตข้อมูลเป็น คุณ"
+                  f" {new_name} (เบอร์: {new_phone}) เรียบร้อยแล้วค่ะ! ✨\n\n"
                   "หากต้องการนัดหมายตรวจรักษากับนักกายภาพบำบัด"
                   " สามารถพิมพ์ 'จองคิว' ได้เลยนะคะ 🏥"
               )
@@ -508,7 +596,8 @@ def handle_message(event):
                 f"ยินดีต้อนรับกลับค่ะ คุณ {profile['name']} 🏥\n"
                 f"(เบอร์ติดต่อ: {profile['phone']})\n\n"
                 f"ต้องการนัดหมายรักษาอาการเดิม ({profile['last_symptom']})\n"
-                "หรือมีอาการใหม่แจ้งเพิ่มเติมคะ?"
+                "หรือมีอาการใหม่แจ้งเพิ่มเติมคะ?\n\n"
+                "💡 หากต้องการเปลี่ยนชื่อหรือเบอร์โทร สามารถพิมพ์ชื่อ-นามสกุลใหม่ หรือกดปุ่มด้านล่างได้เลยนะคะ"
             ),
             quick_reply=QuickReply(
                 items=[
@@ -543,17 +632,63 @@ def handle_message(event):
 
     # --- 5. กรณีคนไข้เดิมเลือกตัวเลือก (RETURNING_CHOICE) ---
     elif current_step == "RETURNING_CHOICE":
-      if any(k in user_text for k in ["แก้ไข", "เปลี่ยน", "เบอร์", "ชื่อ"]):
+      new_name, new_phone = extract_contact_info(
+          user_text, session.get("name"), session.get("phone")
+      )
+
+      # กรณีคนไข้พิมพ์ชื่อใหม่หรือเบอร์ใหม่มาเลยในขั้นตอนนี้
+      if (
+          session.get("name")
+          and (
+              new_name != session.get("name")
+              or new_phone != session.get("phone")
+          )
+          and new_name
+          and new_phone
+      ):
+        session["name"] = new_name
+        session["phone"] = new_phone
+        update_patient_profile(user_id, new_name, new_phone)
+        reply_msg = TextMessage(
+            text=(
+                f"✅ อัปเดตข้อมูลเป็น คุณ {new_name} (เบอร์: {new_phone}) เรียบร้อยแล้วค่ะ! ✨\n\n"
+                f"ต้องการนัดหมายรักษาอาการเดิม ({session.get('last_symptom')})\n"
+                "หรือมีอาการใหม่แจ้งเพิ่มเติมคะ?"
+            ),
+            quick_reply=QuickReply(
+                items=[
+                    QuickReplyItem(
+                        action=MessageAction(
+                            label="นัดรักษาอาการเดิม",
+                            text="นัดรักษาอาการเดิม",
+                        )
+                    ),
+                    QuickReplyItem(
+                        action=MessageAction(
+                            label="แจ้งอาการใหม่", text="แจ้งอาการใหม่"
+                        )
+                    ),
+                    QuickReplyItem(
+                        action=MessageAction(
+                            label="แก้ไขชื่อ/เบอร์โทร",
+                            text="แก้ไขชื่อ/เบอร์โทร",
+                        )
+                    ),
+                ]
+            ),
+        )
+      elif any(k in user_text for k in ["แก้ไข", "เปลี่ยน", "เบอร์", "ชื่อ"]):
         session["step"] = "WAITING_EDIT_CONTACT"
         user_sessions[user_id] = session
         reply_msg = TextMessage(
             text=(
-                "เปลี่ยนชื่อหรือเบอร์ได้แน่นอนค่ะ 😊\n"
-                "ข้อมูลปัจจุบันของคุณ:\n"
-                f"👤 ชื่อ: {session.get('name')}\n"
-                f"📞 เบอร์โทร: {session.get('phone')}\n\n"
-                "กรุณาพิมพ์ 'ชื่อ-นามสกุล และเบอร์โทรศัพท์' ใหม่ที่ต้องการแก้ไขได้เลยค่ะ ✍️\n"
-                "(สามารถพิมพ์ทั้งชื่อและเบอร์ เช่น 'สมชาย ใจดี 0891234567' หรือพิมพ์เฉพาะเบอร์ใหม่/ชื่อใหม่ก็ได้นะคะ)"
+                "สามารถเปลี่ยนชื่อหรือเบอร์โทรได้ทันทีเลยค่ะ 😊\n"
+                "*(ไม่ต้องพิมพ์ชื่อเดิมนะคะ)*\n\n"
+                f"📌 ข้อมูลปัจจุบันของคุณ: คุณ {session.get('name')} (เบอร์: {session.get('phone')})\n\n"
+                "เพียงพิมพ์ข้อมูลใหม่ส่งมาได้เลยค่ะ:\n"
+                "👉 พิมพ์เฉพาะชื่อ-นามสกุลใหม่ (เช่น ปวีณ์กร การเร็ว)\n"
+                "👉 หรือพิมพ์เฉพาะเบอร์โทรใหม่ (เช่น 0891234567)\n"
+                "👉 หรือพิมพ์ทั้งชื่อและเบอร์ใหม่พร้อมกันได้เลยค่ะ ✍️"
             )
         )
       elif (
@@ -596,7 +731,6 @@ def handle_message(event):
               )
           )
         else:
-          # ถ้าเป็นคำถามทั่วไป ส่งให้ Gemini ตอบ และแสดงปุ่มเลือกตัวเลือกเดิมต่อ
           ans = None
           if ai_client:
             try:
