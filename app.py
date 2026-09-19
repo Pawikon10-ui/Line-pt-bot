@@ -59,6 +59,69 @@ SYSTEM_INSTRUCTION = """
    - ให้แจ้งอย่างชัดเจนว่า "สามารถเปลี่ยนได้ทันทีเลยค่ะ 😊 เพียงพิมพ์ 'ชื่อ-นามสกุลใหม่' ส่งมาในแชตนี้ได้เลยนะคะ (ไม่ต้องพิมพ์ชื่อเดิมค่ะ) หรือหากต้องการเปลี่ยนเบอร์ด้วย ก็สามารถพิมพ์เบอร์ใหม่ส่งมาได้เลยค่ะ ระบบจะบันทึกอัปเดตให้อัตโนมัติทันทีค่ะ"
 """
 
+
+# --- Gemini resilient generation ---
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_FALLBACK_MODELS = [
+    m.strip()
+    for m in os.getenv("GEMINI_FALLBACK_MODELS", "").split(",")
+    if m.strip() and m.strip() != GEMINI_MODEL
+]
+GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "4"))
+GEMINI_RETRY_BASE_SECONDS = float(os.getenv("GEMINI_RETRY_BASE_SECONDS", "1.5"))
+
+
+def _is_retryable_gemini_error(err: Exception) -> bool:
+  """Retry transient Gemini availability/rate-limit/server errors."""
+  msg = str(err).upper()
+  return any(token in msg for token in (
+      "503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED",
+      "500", "INTERNAL", "502", "BAD GATEWAY", "504", "DEADLINE",
+  ))
+
+
+def generate_gemini_response(user_text: str) -> Optional[str]:
+  """Generate a Gemini answer with exponential backoff and optional fallback models."""
+  if not ai_client:
+    return None
+
+  models = [GEMINI_MODEL] + GEMINI_FALLBACK_MODELS
+
+  for model_name in models:
+    for attempt in range(GEMINI_MAX_RETRIES + 1):
+      try:
+        response = ai_client.models.generate_content(
+            model=model_name,
+            contents=user_text,
+            config={
+                "system_instruction": SYSTEM_INSTRUCTION,
+                "max_output_tokens": 1024,
+            },
+        )
+        answer = get_visible_ai_text(response)
+        if answer:
+          return answer
+
+        print(f"Gemini model {model_name} returned no visible text.")
+        break
+
+      except Exception as err:
+        retryable = _is_retryable_gemini_error(err)
+        if not retryable or attempt >= GEMINI_MAX_RETRIES:
+          print(f"Gemini model {model_name} failed (attempt {attempt + 1}): {err}")
+          break
+
+        # Exponential backoff: 1.5, 3, 6, 12 seconds by default.
+        wait_seconds = GEMINI_RETRY_BASE_SECONDS * (2 ** attempt)
+        print(
+            f"Gemini model {model_name} temporarily unavailable "
+            f"(attempt {attempt + 1}/{GEMINI_MAX_RETRIES + 1}). "
+            f"Retrying in {wait_seconds:.1f}s: {err}"
+        )
+        time.sleep(wait_seconds)
+
+  return None
+
 # --- 2. ข้อมูลการเชื่อมต่อ Google Sheets ---
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -802,21 +865,7 @@ def handle_message(event):
               )
           )
         else:
-          ans = None
-          if ai_client:
-            try:
-              res = ai_client.models.generate_content(
-                  model="gemini-3.6-flash",
-                  contents=user_text,
-                  config={
-                      "system_instruction": SYSTEM_INSTRUCTION,
-                      # Gemini 3 counts thinking and answer tokens together.
-                      "max_output_tokens": 1024,
-                  },
-              )
-              ans = get_visible_ai_text(res)
-            except Exception as err:
-              print(f"Model gemini-3.6-flash error: {err}")
+          ans = generate_gemini_response(user_text)
           if not ans:
             ans = "กรุณาเลือกตัวเลือกที่ต้องการ หรือพิมพ์ระบุอาการใหม่ได้เลยนะคะ"
 
@@ -971,26 +1020,7 @@ def handle_message(event):
 
     # --- 10. กรณีถามคำถามอื่นๆ (ส่งให้ Gemini AI ตอบคำถามกายภาพบำบัด) ---
     else:
-      reply_text = None
-      if ai_client:
-        candidate_models = ["gemini-3.6-flash"]
-        for model_name in candidate_models:
-          try:
-            ai_response = ai_client.models.generate_content(
-                model=model_name,
-                contents=user_text,
-                config={
-                    "system_instruction": SYSTEM_INSTRUCTION,
-                    # Gemini 3 counts thinking and answer tokens together.
-                    "max_output_tokens": 1024,
-                },
-            )
-            reply_text = get_visible_ai_text(ai_response)
-            if reply_text:
-              break
-          except Exception as err:
-            print(f"Model {model_name} error: {err}")
-            continue
+      reply_text = generate_gemini_response(user_text)
 
       if not reply_text:
         reply_text = (
